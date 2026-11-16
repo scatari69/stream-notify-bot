@@ -43,6 +43,28 @@ class AdminTests(unittest.IsolatedAsyncioTestCase):
             return []
         raise AssertionError(path)
 
+    async def test_language_switch_and_preserves_user_data(self):
+        import asyncio
+        admin_web.atomic_write(admin_web.CONFIG, {'servers': [{'guild_id': 1, 'notification_channel_id': 2, 'streams': [{'name': 'Настройки', 'youtube_channel_id': 'UC1'}]}]})
+        switch = await self.client.get('/language/en?next=/servers/1/settings', headers=self.headers, allow_redirects=False)
+        self.assertEqual(switch.headers['Location'], '/servers/1/settings')
+        self.assertEqual(switch.cookies['language'].value, 'en')
+        unsafe = await self.client.get('/language/en?next=//evil.example', headers=self.headers, allow_redirects=False)
+        self.assertEqual(unsafe.headers['Location'], '/')
+        self.client.session.cookie_jar.clear()
+        with patch.object(admin_web, 'discord_get', self.discord_get), patch.object(admin_web, 'credential', return_value='bot'):
+            en, ru = await asyncio.gather(
+                self.client.get('/servers/1/settings', headers={**self.headers, 'Cookie': 'session=session-id; language=en'}),
+                self.client.get('/servers/1/settings', headers={**self.headers, 'Cookie': 'session=session-id; language=ru'}))
+            english, russian = await en.text(), await ru.text()
+            self.assertIn('<html lang="en">', english)
+            self.assertIn('Add streamer', english)
+            self.assertIn('Настройки', english)  # User-provided streamer name.
+            self.assertIn('<html lang="ru">', russian)
+            self.assertIn('Добавить стримера', russian)
+            invalid = await self.client.post('/servers/1/settings', headers={**self.headers, 'Cookie': 'session=session-id; language=en'}, data={'csrf': 'nonce', 'channel': 'bad'})
+            self.assertIn('Invalid channel or role ID', await invalid.text())
+
     async def test_access_and_secrets_restricted(self):
         with patch.object(admin_web, 'discord_get', self.discord_get), patch.object(admin_web, 'credential', return_value='bot'):
             response = await self.client.get('/servers/1', headers=self.headers)

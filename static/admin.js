@@ -1,4 +1,6 @@
 (() => {
+  const translations = {"Сначала сохраните изменения стримера": "Save the streamer first", "Возобновить": "Resume", "Пауза": "Pause", "Возобновить уведомления": "Resume notifications", "Приостановить уведомления": "Pause notifications", "Сохраните стримера, чтобы управлять паузой.": "Save the streamer to control notifications.", "Изменения ещё не сохранены": "Changes have not been saved", "Можно добавить не больше 101 стримера.": "You can add up to 101 streamers.", "Изменить стримера": "Edit streamer", "Добавить стримера": "Add streamer", "Сохранение…": "Saving…", "Пауза сохранена. Бот применит её при обновлении настроек.": "Paused. The bot will apply this when settings reload.", "Возобновление сохранено. Бот применит его при обновлении настроек.": "Resumed. The bot will apply this when settings reload.", "Не удалось изменить паузу. Обновите страницу и попробуйте снова.": "Could not change pause status. Refresh and try again.", "Укажите имя стримера.": "Enter a streamer name.", "Укажите YouTube или Twitch.": "Enter a YouTube or Twitch channel.", "Этот канал уже добавлен.": "This channel has already been added.", "Изменить": "Edit", "Удалить": "Delete"};
+  const t = (text) => document.documentElement.lang === 'en' ? (translations[text] || text) : text;
   const list = document.querySelector('#stream-list');
   if (!list) return;
   const form = document.querySelector('#stream-editor');
@@ -25,14 +27,14 @@
     const pauseButton = row.querySelector('[data-action=pause]');
     const saved = row.dataset.persisted === '1' && row.dataset.savedYoutube === data.youtube && row.dataset.savedTwitch === data.twitch;
     pauseButton.disabled = !saved;
-    pauseButton.title = saved ? '' : 'Сначала сохраните изменения стримера';
-    pauseButton.textContent = paused ? 'Возобновить' : 'Пауза';
+    pauseButton.title = saved ? '' : t('Сначала сохраните изменения стримера');
+    pauseButton.textContent = paused ? t('Возобновить') : t('Пауза');
     pauseButton.setAttribute('aria-pressed', String(paused));
-    pauseButton.setAttribute('aria-label', `${paused ? 'Возобновить уведомления' : 'Приостановить уведомления'}: ${data.name}`);
+    pauseButton.setAttribute('aria-label', `${paused ? t('Возобновить уведомления') : t('Приостановить уведомления')}: ${data.name}`);
     row.querySelector('.pause-badge').hidden = !paused;
-    row.querySelector('.pause-result').textContent = saved ? '' : 'Сохраните стримера, чтобы управлять паузой.';
-    row.querySelector('[data-action=edit]').setAttribute('aria-label', `Изменить ${data.name}`);
-    row.querySelector('[data-action=delete]').setAttribute('aria-label', `Удалить ${data.name}`);
+    row.querySelector('.pause-result').textContent = saved ? '' : t('Сохраните стримера, чтобы управлять паузой.');
+    row.querySelector('[data-action=edit]').setAttribute('aria-label', `${t('Изменить')} ${data.name}`);
+    row.querySelector('[data-action=delete]').setAttribute('aria-label', `${t('Удалить')} ${data.name}`);
     const platforms = [data.youtube && `YouTube · ${data.youtube}`, data.twitch && `Twitch · ${data.twitch}`].filter(Boolean);
     const member = Array.from(editors.user.options).find((option) => option.value && option.value === data.user);
     if (member) platforms.push(`Discord · ${member.textContent}`);
@@ -40,13 +42,13 @@
   }
   function markChanged() {
     empty.hidden = Boolean(list.querySelector('.stream-row'));
-    dirty.textContent = 'Изменения ещё не сохранены';
+    dirty.textContent = t('Изменения ещё не сохранены');
     dirty.classList.add('dirty');
   }
   function openEditor(row) {
     editing = row;
     if (!row && list.querySelectorAll('.stream-row').length >= 101) {
-      dirty.textContent = 'Можно добавить не больше 101 стримера.';
+      dirty.textContent = t('Можно добавить не больше 101 стримера.');
       dirty.classList.add('dirty');
       return;
     }
@@ -57,7 +59,7 @@
       const data = values(row);
       editable.forEach((key) => { editors[key].value = data[key]; });
     }
-    document.querySelector('#stream-dialog-title').textContent = row ? 'Изменить стримера' : 'Добавить стримера';
+    document.querySelector('#stream-dialog-title').textContent = row ? t('Изменить стримера') : t('Добавить стримера');
     dialog.showModal();
     editors.name.focus();
   }
@@ -74,7 +76,7 @@
       row.querySelectorAll('[data-action=edit], [data-action=delete]').forEach((control) => { control.disabled = true; });
       pendingPauses += 1;
       saveButton.disabled = true;
-      result.textContent = 'Сохранение…';
+      result.textContent = t('Сохранение…');
       try {
         const body = new URLSearchParams({csrf: document.querySelector('#settings-form [name=csrf]').value,
           youtube: data.youtube, twitch: data.twitch, paused: data.paused === '1' ? '0' : '1'});
@@ -84,9 +86,9 @@
         if (typeof saved.paused !== 'boolean') throw new Error('invalid response');
         data.paused = saved.paused ? '1' : '0';
         render(row, data);
-        result.textContent = saved.paused ? 'Пауза сохранена. Бот применит её при обновлении настроек.' : 'Возобновление сохранено. Бот применит его при обновлении настроек.';
+        result.textContent = saved.paused ? t('Пауза сохранена. Бот применит её при обновлении настроек.') : t('Возобновление сохранено. Бот применит его при обновлении настроек.');
       } catch {
-        result.textContent = 'Не удалось изменить паузу. Обновите страницу и попробуйте снова.';
+        result.textContent = t('Не удалось изменить паузу. Обновите страницу и попробуйте снова.');
         button.disabled = false;
       } finally {
         row.querySelectorAll('[data-action=edit], [data-action=delete]').forEach((control) => { control.disabled = false; });
@@ -104,14 +106,14 @@
     event.preventDefault();
     const data = Object.fromEntries(editable.map((key) => [key, editors[key].value.trim()]));
     data.paused = editing ? values(editing).paused : '0';
-    editors.name.setCustomValidity(data.name ? '' : 'Укажите имя стримера.');
+    editors.name.setCustomValidity(data.name ? '' : t('Укажите имя стримера.'));
     const duplicate = Array.from(list.querySelectorAll('.stream-row')).some((row) => {
       if (row === editing) return false;
       const other = values(row);
       return (data.youtube && data.youtube === other.youtube.trim()) ||
         (data.twitch && data.twitch.toLowerCase() === other.twitch.trim().toLowerCase());
     });
-    editors.youtube.setCustomValidity(!data.youtube && !data.twitch ? 'Укажите YouTube или Twitch.' : duplicate ? 'Этот канал уже добавлен.' : '');
+    editors.youtube.setCustomValidity(!data.youtube && !data.twitch ? t('Укажите YouTube или Twitch.') : duplicate ? t('Этот канал уже добавлен.') : '');
     if (!form.reportValidity()) return;
     const row = editing || document.querySelector('#stream-template').content.firstElementChild.cloneNode(true);
     render(row, data);

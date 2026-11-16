@@ -3,16 +3,18 @@ import asyncio
 import html
 import json
 import os
+import re
 import secrets
 import tempfile
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, quote
 
 import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
 
+from i18n import EN, language, page_path, translate
 from app_paths import ROOT, CONFIG, SECRETS, STATUS
 from server_settings import validate_server
 from utils.config import ConfigError, load_config
@@ -49,7 +51,10 @@ def credential(name):
 
 
 def page(body, status=200):
-    body = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101114"><title>Stream Notify</title><link rel="stylesheet" href="/static/admin.css?v=2"><script src="/static/admin.js?v=2" defer></script></head><body><div class="shell"><header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">✳</span> Stream Notify</a><span class="top-label">Панель управления</span></header><main class="content">{body}</main></div></body></html>'''
+    path = quote(page_path.get(), safe='/')
+    switch = f'<nav class="language-switch" aria-label="Language"><a href="/language/ru?next={path}">RU</a><a href="/language/en?next={path}">EN</a></nav>'
+    body = f'''<!doctype html><html lang="{language.get()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101114"><title>Stream Notify</title><link rel="stylesheet" href="/static/admin.css?v=3"><script src="/static/admin.js?v=3" defer></script></head><body><div class="shell"><header class="topbar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">✳</span> Stream Notify</a><span class="top-label">{translate('Панель управления')}</span>{switch}</header><main class="content">{body}</main></div></body></html>'''
+
     return web.Response(text=body, status=status, content_type='text/html', headers={
         'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin',
         'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'",
@@ -71,12 +76,32 @@ async def guard(request, handler):
         raise web.HTTPForbidden()
     if request.method == 'POST' and request.headers.get('Origin') != request.app['origin']:
         raise web.HTTPForbidden()
+    locale_token = language.set(request.cookies.get('language') if request.cookies.get('language') in ('ru', 'en') else 'ru')
+    path_token = page_path.set(request.path)
     try:
-        return await handler(request)
-    except (aiohttp.ClientError, asyncio.TimeoutError):
-        return page('<p>Discord недоступен или отклонил запрос. Повторите попытку позже.</p>', 502)
-    except (ValueError, ConfigError) as exc:
-        return page(f'<p>{esc(exc)}</p><a href="/">Назад</a>', 400)
+        try:
+            return await handler(request)
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return page(translate('<p>Discord недоступен или отклонил запрос. Повторите попытку позже.</p>'), 502)
+        except (ValueError, ConfigError) as exc:
+            message = EN.get(str(exc), str(exc)) if language.get() == 'en' else str(exc)
+            return page(f'<p>{esc(message)}</p><a href="/">{translate("Назад")}</a>', 400)
+    finally:
+        page_path.reset(path_token)
+        language.reset(locale_token)
+
+
+async def set_language(request):
+    locale = request.match_info['locale']
+    if locale not in ('ru', 'en'):
+        raise web.HTTPNotFound()
+    destination = request.query.get('next', '/')
+    if not re.fullmatch(r'/[A-Za-z0-9/_-]*', destination):
+        destination = '/'
+    response = web.HTTPFound(destination)
+    response.set_cookie('language', locale, max_age=31536000, httponly=True,
+                        secure=request.app['origin'].startswith('https://'), samesite='Lax', path='/')
+    raise response
 
 
 def session_for(request):
@@ -134,20 +159,20 @@ async def index(request):
     invite_url = 'https://discord.com/oauth2/authorize?' + urlencode({
         'client_id': request.app['client_id'], 'permissions': '216064', 'scope': 'bot applications.commands',
     })
-    invite = f'<a class="button secondary" href="{esc(invite_url)}">＋ Добавить бота на сервер Discord</a>'
+    invite = f'''<a class="button secondary" href="{esc(invite_url)}{translate('">＋ Добавить бота на сервер Discord</a>')}'''
     session = request.app['sessions'].get(request.cookies.get('session', ''))
     if not session or session['expires'] <= time.time():
-        return page(f'''<div class="hero login-hero"><div><div class="eyebrow">Всегда на связи</div><h2>Каждый эфир<br>начинается здесь.</h2><p>Управляйте стримерами и уведомлениями вашего Discord-сервера в одном месте.</p><div class="hero-actions"><a class="button" href="/login">Войти через Discord <span aria-hidden="true">↗</span></a>{invite}</div></div></div><div class="login-note"><span class="live-dot"></span> TWITCH &nbsp; / &nbsp; YOUTUBE <span>Уведомления, когда это важно.</span></div>''')
+        return page(f"""{translate('<div class="hero login-hero"><div><div class="eyebrow">Всегда на связи</div><h2>Каждый эфир<br>начинается здесь.</h2><p>Управляйте стримерами и уведомлениями вашего Discord-сервера в одном месте.</p><div class="hero-actions"><a class="button" href="/login">Войти через Discord <span aria-hidden="true">↗</span></a>')}{invite}{translate('</div></div></div><div class="login-note"><span class="live-dot"></span> TWITCH &nbsp; / &nbsp; YOUTUBE <span>Уведомления, когда это важно.</span></div>')}""")
     try:
         servers = await accessible(request, session)
         error = ''
     except (aiohttp.ClientError, asyncio.TimeoutError):
         servers = []
-        error = '<p class="notice">Не удалось получить серверы Discord. Проверьте токен бота и подключение.</p>'
+        error = translate('<p class="notice">Не удалось получить серверы Discord. Проверьте токен бота и подключение.</p>')
     links = ''.join(f'<a class="server-choice" href="/servers/{esc(g["id"])}"><span class="avatar">{esc(g["name"][:1].upper())}</span><span class="server-name">{esc(g["name"])}</span><span aria-hidden="true">↗</span></a>' for g in servers)
     owner = session['user_id'] == request.app['owner_id']
-    owner_link = '<a class="button ghost-link" href="/secrets">Общие токены и ключи</a>' if owner else ''
-    return page(f'''<div class="hero"><div><div class="eyebrow">Рады видеть вас</div><h2>Ваши серверы</h2><p>Вы вошли как {esc(session["username"])}. Выберите сервер для управления.</p></div></div>{error}<div class="server-list">{links or '<div class="empty">Нет доступных серверов. Добавьте бота на сервер и проверьте права администратора.</div>'}</div><div class="home-actions">{invite}{owner_link}<form method="post" action="/logout">{csrf(session)}<button class="ghost" type="submit">Выйти</button></form></div>''')
+    owner_link = translate('<a class="button ghost-link" href="/secrets">Общие токены и ключи</a>') if owner else ''
+    return page(f"""{translate('<div class="hero"><div><div class="eyebrow">Рады видеть вас</div><h2>Ваши серверы</h2><p>Вы вошли как ')}{esc(session['username'])}{translate('. Выберите сервер для управления.</p></div></div>')}{error}<div class="server-list">{links or translate('<div class="empty">Нет доступных серверов. Добавьте бота на сервер и проверьте права администратора.</div>')}</div><div class="home-actions">{invite}{owner_link}<form method="post" action="/logout">{csrf(session)}{translate('<button class="ghost" type="submit">Выйти</button></form></div>')}""")
 
 
 async def login(request):
@@ -222,7 +247,7 @@ async def server_page(request):
     guild_id = await authorize_guild(request, session)
     config, server = server_data(guild_id)
     if not server:
-        return page(f'''<a class="breadcrumb" href="/">← Выбор сервера</a><div class="hero"><div><div class="eyebrow">Новый сервер</div><h2>Всё начинается<br>с настройки.</h2><p>Выберите канал уведомлений и добавьте стримеров, чтобы бот начал следить за эфирами.</p><div class="hero-actions"><a class="button" href="/servers/{guild_id}/settings">Настроить сервер ↗</a></div></div></div>''')
+        return page(f"""{translate('<a class="breadcrumb" href="/">← Выбор сервера</a><div class="hero"><div><div class="eyebrow">Новый сервер</div><h2>Всё начинается<br>с настройки.</h2><p>Выберите канал уведомлений и добавьте стримеров, чтобы бот начал следить за эфирами.</p><div class="hero-actions"><a class="button" href="/servers/')}{guild_id}{translate('/settings">Настроить сервер ↗</a></div></div></div>')}""")
     snapshot = read_json(STATUS, {})
     timestamp = snapshot.get('updated_at')
     try:
@@ -254,26 +279,26 @@ async def server_page(request):
                 continue
             item = observed.get((name, channel.lower() if name == 'twitch' else channel), {}) if fresh else {}
             state = item.get('status', 'unknown')
-            label = {'online': 'В эфире', 'offline': 'Не в эфире'}.get(state, 'Нет данных')
+            label = translate({'online': 'В эфире', 'offline': 'Не в эфире'}.get(state, 'Нет данных'))
             if state == 'online':
                 online += 1
             title = f' — {esc(item["title"])}' if item.get('title') else ''
             problems = [errors[item[key]] for key in ('check_error', 'delivery_error', 'delete_error') if item.get(key) in errors]
-            detail = ''.join(f'<span class="status-error">{esc(problem)}</span>' for problem in problems)
+            detail = ''.join(f'<span class="status-error">{esc(translate(problem))}</span>' for problem in problems)
             status_class = state if state in ('online', 'offline') else 'unknown'
             platforms.append(f'<span class="platform-line"><span class="status-dot {status_class}"></span>{name.capitalize()}: {label}{title}</span>{detail}')
         linked = f'<span class="stream-meta">Discord ID · {esc(stream["discord_user_id"])}</span>' if stream.get('discord_user_id') else ''
-        paused = '<span class="pause-badge">Уведомления на паузе</span>' if stream.get('paused', False) else ''
+        paused = translate('<span class="pause-badge">Уведомления на паузе</span>') if stream.get('paused', False) else ''
         rows.append(f'<article class="overview-row"><span class="avatar" aria-hidden="true">{esc(stream["name"][:1].upper())}</span><div><strong>{esc(stream["name"])}</strong> {paused} {linked}<div class="platforms">{"".join(platforms)}</div></div></article>')
-    info = f'Последнее обновление: {esc(timestamp)}' if fresh else 'Нет свежих данных: бот ещё не проверил стримы или остановлен.'
+    info = f"{translate('Последнее обновление: ')}{esc(timestamp)}" if fresh else translate('Нет свежих данных: бот ещё не проверил стримы или остановлен.')
     runtime_errors = {
         'config_error': 'Бот не смог применить настройки или прочитать ключи; работают последние корректные настройки.',
         'discord_token_invalid': 'Discord отклонил новый токен бота; используется предыдущее подключение.',
         'discord_unavailable': 'Не удалось проверить токен Discord; бот повторит попытку.',
     }
     runtime = runtime_errors.get(snapshot.get('runtime_error')) if fresh else None
-    runtime_notice = f'<p><strong>Ошибка:</strong> {esc(runtime)}</p>' if runtime else ''
-    return page(f'''<a class="breadcrumb" href="/">← Выбор сервера</a><div class="hero"><div><div class="eyebrow">Панель сервера</div><h2>Обзор</h2><p>Статус трансляций и уведомлений в одном месте.</p></div><a class="button secondary" href="/servers/{guild_id}/settings">⚙ Настройки</a></div><div class="stats-grid"><div class="stat-card"><span>Стримеров</span><strong>{len(server.get('streams', []))}</strong><small>Добавлено на сервере</small></div><div class="stat-card"><span>Сейчас в эфире</span><strong>{online}</strong><small>Активных площадок</small></div><div class="stat-card"><span>Уведомления</span><strong class="stat-format">{esc(server.get('message_type', 'embed')).upper()}</strong><small>Канал · {esc(server['notification_channel_id'])}</small></div></div><p class="update-time">{info}</p>{runtime_notice}<section class="panel"><div class="list-heading"><div><h3>Стримеры</h3><p>Последнее состояние отслеживаемых каналов.</p></div><a class="button secondary" href="/servers/{guild_id}/settings">Управлять ↗</a></div><div class="overview-list">{''.join(rows) or '<div class="empty">Стримеры ещё не добавлены.</div>'}</div></section>''')
+    runtime_notice = f"{translate('<p><strong>Ошибка:</strong> ')}{esc(translate(runtime))}</p>" if runtime else ''
+    return page(f"""{translate('<a class="breadcrumb" href="/">← Выбор сервера</a><div class="hero"><div><div class="eyebrow">Панель сервера</div><h2>Обзор</h2><p>Статус трансляций и уведомлений в одном месте.</p></div><a class="button secondary" href="/servers/')}{guild_id}{translate('/settings">⚙ Настройки</a></div><div class="stats-grid"><div class="stat-card"><span>Стримеров</span><strong>')}{len(server.get('streams', []))}{translate('</strong><small>Добавлено на сервере</small></div><div class="stat-card"><span>Сейчас в эфире</span><strong>')}{online}{translate('</strong><small>Активных площадок</small></div><div class="stat-card"><span>Уведомления</span><strong class="stat-format">')}{esc(server.get('message_type', 'embed')).upper()}{translate('</strong><small>Канал · ')}{esc(server['notification_channel_id'])}</small></div></div><p class="update-time">{info}</p>{runtime_notice}{translate('<section class="panel"><div class="list-heading"><div><h3>Стримеры</h3><p>Последнее состояние отслеживаемых каналов.</p></div><a class="button secondary" href="/servers/')}{guild_id}{translate('/settings">Управлять ↗</a></div><div class="overview-list">')}{''.join(rows) or translate('<div class="empty">Стримеры ещё не добавлены.</div>')}</div></section>""")
 
 
 async def settings_page(request):
@@ -290,15 +315,15 @@ async def settings_page(request):
         if exc.status != 403:
             raise
         members = []
-        member_warning = '<p>Список участников недоступен. Включите Server Members Intent в Discord Developer Portal; существующие привязки сохраняются.</p>'
+        member_warning = translate('<p>Список участников недоступен. Включите Server Members Intent в Discord Developer Portal; существующие привязки сохраняются.</p>')
     channel_options = ''.join(f'<option value="{esc(c["id"])}"{selected(c["id"], server["notification_channel_id"])}>#{esc(c["name"])}</option>' for c in channels if c['type'] == 0)
-    role_options = '<option value="0">Без роли</option>' + ''.join(f'<option value="{esc(r["id"])}"{selected(r["id"], server.get("live_role_id", 0))}>{esc(r["name"])}</option>' for r in roles if r['id'] != str(guild_id))
+    role_options = translate('<option value="0">Без роли</option>') + ''.join(f'<option value="{esc(r["id"])}"{selected(r["id"], server.get("live_role_id", 0))}>{esc(r["name"])}</option>' for r in roles if r['id'] != str(guild_id))
     member_names = {member['user']['id']: member.get('nick') or member['user'].get('global_name') or member['user']['username'] for member in members if not member['user'].get('bot')}
     for stream in server['streams']:
         user_id = stream.get('discord_user_id', '')
         if user_id and user_id not in member_names:
-            member_names[user_id] = f'Участник {user_id}'
-    member_options = '<option value="">Не выбран</option>' + ''.join(
+            member_names[user_id] = f"{translate('Участник ')}{user_id}"
+    member_options = translate('<option value="">Не выбран</option>') + ''.join(
         f'<option value="{esc(user_id)}">{esc(name)}</option>' for user_id, name in member_names.items())
 
     def stream_row(stream):
@@ -310,7 +335,7 @@ async def settings_page(request):
                    f'Twitch · {data["twitch"]}' if data['twitch'] else '',
                    f'Discord · {member_names.get(data["user"], data["user"])}' if data['user'] else '']
         description = '   /   '.join(detail for detail in details if detail)
-        return f'''<article class="stream-row" data-persisted="{'1' if stream else '0'}" data-saved-youtube="{esc(data['youtube'])}" data-saved-twitch="{esc(data['twitch'])}">{inputs}<span class="avatar" aria-hidden="true">{esc(data['name'][:1].upper() or '•')}</span><div class="stream-info"><div class="stream-name">{esc(data['name'])}</div><span class="pause-badge"{' hidden' if data['paused'] == '0' else ''}>Уведомления на паузе</span><div class="stream-meta">{esc(description)}</div></div><div class="stream-actions"><button class="ghost" type="button" data-action="pause" aria-label="{'Возобновить' if data['paused'] == '1' else 'Приостановить'} уведомления: {esc(data['name'])}" aria-pressed="{'true' if data['paused'] == '1' else 'false'}"{' disabled' if not stream else ''}>{'Возобновить' if data['paused'] == '1' else 'Пауза'}</button><button class="ghost" type="button" data-action="edit" aria-label="Изменить {esc(data['name'])}">Изменить</button><button class="danger-text" type="button" data-action="delete" aria-label="Удалить {esc(data['name'])}">Удалить</button></div><span class="pause-result" role="status" aria-live="polite"></span></article>'''
+        return f'''<article class="stream-row" data-persisted="{('1' if stream else '0')}" data-saved-youtube="{esc(data['youtube'])}" data-saved-twitch="{esc(data['twitch'])}">{inputs}<span class="avatar" aria-hidden="true">{esc(data['name'][:1].upper() or '•')}</span><div class="stream-info"><div class="stream-name">{esc(data['name'])}</div><span class="pause-badge"{(' hidden' if data['paused'] == '0' else '')}{translate('>Уведомления на паузе</span><div class="stream-meta">')}{esc(description)}</div></div><div class="stream-actions"><button class="ghost" type="button" data-action="pause" aria-label="{(translate('Возобновить') if data['paused'] == '1' else translate('Приостановить'))}{translate(' уведомления: ')}{esc(data['name'])}" aria-pressed="{('true' if data['paused'] == '1' else 'false')}"{(' disabled' if not stream else '')}>{(translate('Возобновить') if data['paused'] == '1' else translate('Пауза'))}{translate('</button><button class="ghost" type="button" data-action="edit" aria-label="Изменить ')}{esc(data['name'])}{translate('">Изменить</button><button class="danger-text" type="button" data-action="delete" aria-label="Удалить ')}{esc(data['name'])}{translate('">Удалить</button></div><span class="pause-result" role="status" aria-live="polite"></span></article>')}'''
 
     rows = ''.join(stream_row(stream) for stream in server['streams'])
     template = stream_row({})
@@ -318,21 +343,7 @@ async def settings_page(request):
     message = server.get('custom_message', config.get('custom_message', '**{name}** just went live on {platform}!'))
     delete = server.get('delete_after_offline', config.get('delete_after_offline', False))
     member_warning = f'<div class="notice">{member_warning}</div>' if member_warning else ''
-    return page(f'''<a class="breadcrumb" href="/servers/{guild_id}">← Обзор сервера</a>
-<div class="hero"><div><div class="eyebrow">Управление сервером</div><h2>Настройки</h2><p>Стримеры и уведомления — всё в одном месте.</p></div><span class="hero-side">ID сервера · {guild_id}</span></div>
-{member_warning}<noscript><p class="notice">Для добавления, изменения и удаления стримеров включите JavaScript.</p></noscript>
-<form method="post" id="settings-form">{csrf(session)}
-<section class="panel"><div class="panel-heading"><div class="panel-title"><span class="number">01</span><div><h3>Уведомления</h3><p>Куда и как отправлять сообщения о трансляциях.</p></div></div></div>
-<div class="grid"><label class="field">Канал уведомлений<select name="channel" required><option value="">Выберите канал</option>{channel_options}</select></label><label class="field">Роль для упоминания<select name="role">{role_options}</select></label>
-<label class="field field-wide">Формат сообщения<select name="message_type"><option value="plain"{selected('plain', message_type)}>Простой текст</option><option value="embed"{selected('embed', message_type)}>Embed с предпросмотром</option></select></label>
-<label class="field field-wide">Текст уведомления<textarea name="custom_message" maxlength="1000" required>{esc(message)}</textarea><small class="template-hint">Переменные: {{name}}, {{streamer}}, {{platform}}, {{url}}. Ссылка добавится в простой текст автоматически.</small></label>
-<label class="checkbox field-wide"><input type="checkbox" name="delete_after_offline" value="1"{' checked' if delete else ''}> Удалять уведомление после окончания эфира</label></div></section>
-<section class="panel"><div class="list-heading"><div class="panel-title"><span class="number">02</span><div><h3>Стримеры</h3><p>Пауза отключает уведомления, но сохраняет статус. После возобновления текущий эфир может вызвать уведомление.</p></div></div><button class="secondary" type="button" id="add-stream">＋ Добавить стримера</button></div>
-<div id="stream-list" class="settings-list" data-pause-url="/servers/{guild_id}/pause">{rows}</div><div id="stream-empty" class="empty"{' hidden' if rows else ''}>Пока нет стримеров. Добавьте первого, чтобы начать отслеживание.</div></section>
-<div class="savebar"><p id="save-hint" role="status">Изменения применяются после сохранения.</p><button type="submit">Сохранить настройки <span aria-hidden="true">↗</span></button></div></form>
-<template id="stream-template">{template}</template>
-<dialog id="stream-dialog" aria-labelledby="stream-dialog-title"><form id="stream-editor" method="dialog" class="dialog-inner"><div class="dialog-head"><div><h2 id="stream-dialog-title">Добавить стримера</h2><p>Укажите хотя бы одну платформу для отслеживания.</p></div><button class="icon" type="button" data-close-dialog aria-label="Закрыть">×</button></div><div class="dialog-fields"><label>Имя стримера<input name="name" maxlength="100" required placeholder="Например, Alex"></label><label>Канал YouTube<input name="youtube" maxlength="100" placeholder="ID канала, начинается с UC"></label><label>Логин Twitch<input name="twitch" maxlength="100" placeholder="Например, twitch_login"></label><label>Участник Discord<select name="user">{member_options}</select><small>Связанный участник будет упомянут через {{streamer}}.</small></label></div><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit">Готово</button></div></form></dialog>
-<dialog id="delete-dialog" aria-labelledby="delete-title"><div class="dialog-inner"><div class="dialog-head"><div><h2 id="delete-title">Удалить стримера?</h2><p>Бот перестанет отслеживать <strong id="delete-name"></strong> после сохранения настроек.</p></div><button class="icon" type="button" data-close-dialog aria-label="Закрыть">×</button></div><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="button" class="danger" id="confirm-delete">Удалить</button></div></div></dialog>''')
+    return page(f'''<a class="breadcrumb" href="/servers/{guild_id}{translate('">← Обзор сервера</a>\n<div class="hero"><div><div class="eyebrow">Управление сервером</div><h2>Настройки</h2><p>Стримеры и уведомления — всё в одном месте.</p></div><span class="hero-side">ID сервера · ')}{guild_id}</span></div>\n{member_warning}{translate('<noscript><p class="notice">Для добавления, изменения и удаления стримеров включите JavaScript.</p></noscript>\n<form method="post" id="settings-form">')}{csrf(session)}{translate('\n<section class="panel"><div class="panel-heading"><div class="panel-title"><span class="number">01</span><div><h3>Уведомления</h3><p>Куда и как отправлять сообщения о трансляциях.</p></div></div></div>\n<div class="grid"><label class="field">Канал уведомлений<select name="channel" required><option value="">Выберите канал</option>')}{channel_options}{translate('</select></label><label class="field">Роль для упоминания<select name="role">')}{role_options}{translate('</select></label>\n<label class="field field-wide">Формат сообщения<select name="message_type"><option value="plain"')}{selected('plain', message_type)}{translate('>Простой текст</option><option value="embed"')}{selected('embed', message_type)}{translate('>Embed с предпросмотром</option></select></label>\n<label class="field field-wide">Текст уведомления<textarea name="custom_message" maxlength="1000" required>')}{esc(message)}{translate('</textarea><small class="template-hint">Переменные: {name}, {streamer}, {platform}, {url}. Ссылка добавится в простой текст автоматически.</small></label>\n<label class="checkbox field-wide"><input type="checkbox" name="delete_after_offline" value="1"')}{(' checked' if delete else '')}{translate('> Удалять уведомление после окончания эфира</label></div></section>\n<section class="panel"><div class="list-heading"><div class="panel-title"><span class="number">02</span><div><h3>Стримеры</h3><p>Пауза отключает уведомления, но сохраняет статус. После возобновления текущий эфир может вызвать уведомление.</p></div></div><button class="secondary" type="button" id="add-stream">＋ Добавить стримера</button></div>\n<div id="stream-list" class="settings-list" data-pause-url="/servers/')}{guild_id}/pause">{rows}</div><div id="stream-empty" class="empty"{(' hidden' if rows else '')}{translate('>Пока нет стримеров. Добавьте первого, чтобы начать отслеживание.</div></section>\n<div class="savebar"><p id="save-hint" role="status">Изменения применяются после сохранения.</p><button type="submit">Сохранить настройки <span aria-hidden="true">↗</span></button></div></form>\n<template id="stream-template">')}{template}{translate('</template>\n<dialog id="stream-dialog" aria-labelledby="stream-dialog-title"><form id="stream-editor" method="dialog" class="dialog-inner"><div class="dialog-head"><div><h2 id="stream-dialog-title">Добавить стримера</h2><p>Укажите хотя бы одну платформу для отслеживания.</p></div><button class="icon" type="button" data-close-dialog aria-label="Закрыть">×</button></div><div class="dialog-fields"><label>Имя стримера<input name="name" maxlength="100" required placeholder="Например, Alex"></label><label>Канал YouTube<input name="youtube" maxlength="100" placeholder="ID канала, начинается с UC"></label><label>Логин Twitch<input name="twitch" maxlength="100" placeholder="Например, twitch_login"></label><label>Участник Discord<select name="user">')}{member_options}{translate('</select><small>Связанный участник будет упомянут через {streamer}.</small></label></div><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit">Готово</button></div></form></dialog>\n<dialog id="delete-dialog" aria-labelledby="delete-title"><div class="dialog-inner"><div class="dialog-head"><div><h2 id="delete-title">Удалить стримера?</h2><p>Бот перестанет отслеживать <strong id="delete-name"></strong> после сохранения настроек.</p></div><button class="icon" type="button" data-close-dialog aria-label="Закрыть">×</button></div><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="button" class="danger" id="confirm-delete">Удалить</button></div></div></dialog>')}''')
 
 
 async def save_server(request):
@@ -379,7 +390,7 @@ async def save_server(request):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-    return page(f'<p>Сохранено. Бот применит настройки в течение нескольких секунд.</p><a href="/servers/{guild_id}">К обзору сервера</a>')
+    return page(f"""{translate('<p>Сохранено. Бот применит настройки в течение нескольких секунд.</p><a href="/servers/')}{guild_id}{translate('">К обзору сервера</a>')}""")
 
 
 async def pause_stream(request):
@@ -392,10 +403,10 @@ async def pause_stream(request):
     async with request.app['lock']:
         config, server = server_data(guild_id)
         if not server:
-            raise web.HTTPConflict(text='Настройки сервера изменились')
+            raise web.HTTPConflict(text=translate('Настройки сервера изменились'))
         stream = next((s for s in server['streams'] if s.get('youtube_channel_id', '') == youtube and s.get('twitch_username', '') == twitch), None)
         if stream is None:
-            raise web.HTTPConflict(text='Стример изменён или удалён')
+            raise web.HTTPConflict(text=translate('Стример изменён или удалён'))
         stream['paused'] = paused == '1'
         validate_server(server)
         atomic_write(CONFIG, config)
@@ -411,8 +422,8 @@ def require_owner(request):
 
 async def secrets_page(request):
     session = require_owner(request)
-    fields = ''.join(f'<label>{key}<input name="{key}" type="password" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>' for key in KEYS)
-    return page(f'<p><a href="/">← Серверы</a></p><h2>Общие токены и ключи</h2><p>Сохранённые значения не отображаются. Изменения применяются автоматически; новый токен Discord должен принадлежать тому же боту.</p><form method="post" class="panel dialog-fields">{csrf(session)}{fields}<button>Сохранить</button></form>')
+    fields = ''.join(f'''<label>{key}<input name="{key}{translate('" type="password" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>')}''' for key in KEYS)
+    return page(f"""{translate('<p><a href="/">← Серверы</a></p><h2>Общие токены и ключи</h2><p>Сохранённые значения не отображаются. Изменения применяются автоматически; новый токен Discord должен принадлежать тому же боту.</p><form method="post" class="panel dialog-fields">')}{csrf(session)}{fields}{translate('<button>Сохранить</button></form>')}""")
 
 
 async def save_secrets(request):
@@ -429,7 +440,7 @@ async def save_secrets(request):
         current = read_json(SECRETS, {})
         current.update(updates)
         atomic_write(SECRETS, current)
-    return page('<p>Ключи сохранены. Бот применит изменения автоматически.</p><a href="/">К серверам</a>')
+    return page(translate('<p>Ключи сохранены. Бот применит изменения автоматически.</p><a href="/">К серверам</a>'))
 
 
 def validate_origin(origin):
@@ -458,7 +469,7 @@ async def create_app(client_id, client_secret, owner_id, origin=ORIGIN):
     app.on_startup.append(start)
     app.on_cleanup.append(stop)
     app.router.add_static('/static/', ROOT / 'static')
-    app.add_routes([web.get('/', index), web.get('/login', login), web.get('/callback', callback), web.post('/logout', logout), web.get('/servers/{guild_id}', server_page), web.get('/servers/{guild_id}/settings', settings_page), web.post('/servers/{guild_id}/settings', save_server), web.post('/servers/{guild_id}/pause', pause_stream), web.get('/secrets', secrets_page), web.post('/secrets', save_secrets)])
+    app.add_routes([web.get('/', index), web.get('/language/{locale}', set_language), web.get('/login', login), web.get('/callback', callback), web.post('/logout', logout), web.get('/servers/{guild_id}', server_page), web.get('/servers/{guild_id}/settings', settings_page), web.post('/servers/{guild_id}/settings', save_server), web.post('/servers/{guild_id}/pause', pause_stream), web.get('/secrets', secrets_page), web.post('/secrets', save_secrets)])
     return app
 
 

@@ -11,7 +11,7 @@ from datetime import datetime
 
 import aiohttp
 
-from platforms.base import BasePlatform, StreamInfo
+from platforms.base import BasePlatform, PlatformError, StreamInfo
 from utils.config import Config
 
 _TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -46,7 +46,7 @@ class TwitchPlatform(BasePlatform):
         async def _fetch() -> dict | None:
             async with self.session.post(
                 _TOKEN_URL,
-                params={
+                data={
                     "client_id": self.config.twitch_client_id or "",
                     "client_secret": self.config.twitch_client_secret or "",
                     "grant_type": "client_credentials",
@@ -57,7 +57,7 @@ class TwitchPlatform(BasePlatform):
 
         data = await self._with_retry(_fetch, retries=3, what="Twitch token")
         if not data or "access_token" not in data:
-            return None
+            raise PlatformError("Twitch returned no access token")
 
         self._token = data["access_token"]
         self._token_expiry = time.time() + int(data.get("expires_in", 3600))
@@ -81,7 +81,9 @@ class TwitchPlatform(BasePlatform):
             },
             params={"user_login": self.config.twitch_username or ""},
         )
-        if not data or not data.get("data"):
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise PlatformError("Twitch returned an invalid streams response")
+        if not data["data"]:
             return None
 
         stream = data["data"][0]

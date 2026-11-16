@@ -103,13 +103,15 @@ class AdminCommands(commands.Cog):
         )
         embed.add_field(
             name="Delivery",
-            value="Webhook" if self.config.webhook_mode else "Bot message",
+            value="Bot message",
             inline=True,
         )
 
         lines = []
         for platform in monitor.platforms:
-            state = monitor.state[platform.name]
+            if platform.config.servers[0].guild_id != interaction.guild_id:
+                continue
+            state = monitor.state[platform]
             status = "🔴 LIVE" if state.is_live else "⚫ offline"
             lines.append(f"{platform.emoji} **{platform.display_name}** — {status}")
         embed.add_field(
@@ -133,7 +135,10 @@ class AdminCommands(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        live = await monitor.check_all()
+        await monitor.check_all()
+        live = [monitor.state[platform].last_info for platform in monitor.platforms
+                if platform.config.servers[0].guild_id == interaction.guild_id
+                and monitor.state[platform].is_live and monitor.state[platform].last_info]
         if not live:
             await interaction.followup.send("No platforms are currently live.")
             return
@@ -186,8 +191,10 @@ class AdminCommands(commands.Cog):
             return
 
         for platform in monitor.platforms:
+            if platform.config.servers[0].guild_id != interaction.guild_id:
+                continue
             sent = monitor.stats.per_platform.get(platform.name, 0)
-            state = monitor.state[platform.name]
+            state = monitor.state[platform]
             status = "🔴 LIVE" if state.is_live else "⚫ offline"
             embed.add_field(
                 name=f"{platform.emoji} {platform.display_name}",

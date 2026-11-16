@@ -23,3 +23,8 @@ dist/
 *.log
 .idea/
 .vscode/
+.secrets.json
+.admin-*.tmp
+
+# Durable notification state
+/data/

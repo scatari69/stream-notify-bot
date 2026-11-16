@@ -18,6 +18,9 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from server_settings import validate_server
+from app_paths import SECRETS
+
 
 class ConfigError(Exception):
     """Raised when the configuration is missing or invalid."""
@@ -26,21 +29,12 @@ class ConfigError(Exception):
 # A sensible, fully-populated template written by ``/createconfig`` and used as
 # the default when generating ``config.json``.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "discord_token": "",
-    "guild_id": 0,
-    "notification_channel_id": 0,
-    "live_role_id": 0,
-    "streamer_name": "Alpha",
-    "youtube_channel_id": "",
-    "twitch_username": "",
     "poll_interval": 60,
     "embed_color": "0xFF0000",
     "custom_message": "**{name}** just went live on {platform}!",
     "presence_idle": "for live streams...",
     "ping_once_per_stream": True,
     "delete_after_offline": False,
-    "webhook_mode": False,
-    "webhook_url": "",
     "buttons": {
         "watch_stream": {"enabled": True, "label": "Watch Stream", "emoji": "▶️"},
         "join_discord": {"enabled": True, "label": "Join Discord", "emoji": "💬", "url": ""},
@@ -103,6 +97,10 @@ class ServerConfig:
     guild_id: int
     notification_channel_id: int
     live_role_id: int | None = None
+    streams: list[dict[str, str]] = field(default_factory=list)
+    message_type: str = "embed"
+    custom_message: str | None = None
+    delete_after_offline: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ServerConfig":
@@ -111,6 +109,10 @@ class ServerConfig:
             guild_id=int(data["guild_id"]),
             notification_channel_id=int(data["notification_channel_id"]),
             live_role_id=int(role) if role else None,
+            streams=data.get("streams", []),
+            message_type=data.get("message_type", "embed"),
+            custom_message=data.get("custom_message"),
+            delete_after_offline=data.get("delete_after_offline"),
         )
 
 
@@ -126,6 +128,9 @@ class Config:
 
     # --- General ----------------------------------------------------------
     streamer_name: str
+    stream_paused: bool
+    discord_user_id: str
+    message_type: str
     poll_interval: int
     embed_color: int
     custom_message: str
@@ -134,8 +139,6 @@ class Config:
     delete_after_offline: bool
 
     # --- Delivery ---------------------------------------------------------
-    webhook_mode: bool
-    webhook_url: str | None
     servers: list[ServerConfig]
 
     # --- Platforms (raw values; consumed by the platform classes) ---------
@@ -156,26 +159,44 @@ class Config:
         return self.themes.get("default", self.embed_color)
 
 
-def _load_json(path: Path) -> dict[str, Any]:
+def _load_json(path: Path, *, allow_missing: bool = False) -> dict[str, Any]:
     """Read and parse ``config.json`` merged over the defaults."""
     if not path.exists():
-        raise ConfigError(
-            f"Config file not found at '{path}'. Run the bot once and use "
-            f"/createconfig, or copy config.example.json to config.json."
-        )
+        if allow_missing:
+            return json.loads(json.dumps(DEFAULT_CONFIG))
+        raise ConfigError(f"Config file not found at '{path}'.")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ConfigError(f"config.json is not valid JSON: {exc}") from exc
 
     merged = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy of defaults
+    if not isinstance(data, dict):
+        raise ConfigError("config.json must be an object")
+    legacy = {"guild_id", "notification_channel_id", "live_role_id", "streamer_name", "youtube_channel_id", "twitch_username", "discord_token"}
+    if legacy.intersection(data):
+        raise ConfigError("Old top-level stream settings are unsupported; configure servers instead.")
+    if data.get("webhook_mode"):
+        raise ConfigError("Webhook delivery was removed; configure a Discord notification channel.")
     merged.update(data)
+    try:
+        if not isinstance(merged["servers"], list):
+            raise ValueError("servers must be a list")
+        for server in merged["servers"]:
+            validate_server(server)
+        ids = [server["guild_id"] for server in merged["servers"]]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate guild_id")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError(f"Invalid server configuration: {exc}") from exc
     return merged
 
 
 def load_config(
     config_path: str | os.PathLike[str] = "config.json",
     env_path: str | os.PathLike[str] = ".env",
+    *,
+    allow_missing: bool = False,
 ) -> Config:
     """Load, merge and validate configuration.
 
@@ -190,10 +211,20 @@ def load_config(
         ConfigError: If required values are missing or malformed.
     """
     load_dotenv(env_path)
-    data = _load_json(Path(config_path))
+    data = _load_json(Path(config_path), allow_missing=allow_missing)
 
-    # Secrets always prefer the environment; config.json may keep blanks.
-    discord_token = os.getenv("DISCORD_TOKEN") or str(data.get("discord_token", ""))
+    # The owner can replace secrets through the local panel.
+    secrets_path = SECRETS if os.environ.get("APP_DATA_DIR") else Path(env_path).resolve().parent / ".secrets.json"
+    try:
+        saved_secrets = json.loads(secrets_path.read_text(encoding="utf-8")) if secrets_path.exists() else {}
+        if not isinstance(saved_secrets, dict):
+            raise ValueError("Expected an object")
+    except (ValueError, OSError) as exc:
+        raise ConfigError(f"Cannot read saved secrets: {exc}") from exc
+    def secret(name: str) -> str:
+        return saved_secrets.get(name) or os.getenv(name, "")
+
+    discord_token = secret("DISCORD_TOKEN")
     if not discord_token:
         raise ConfigError(
             "Discord token missing. Set DISCORD_TOKEN in your .env file."
@@ -209,19 +240,7 @@ def load_config(
     theme_data.update(data.get("themes") or {})
     themes = {key: _coerce_color(val) for key, val in theme_data.items()}
 
-    # Servers: explicit multi-guild list, else build one from the top-level
-    # guild/channel/role fields for backwards compatibility.
-    servers: list[ServerConfig] = []
-    if data.get("servers"):
-        servers = [ServerConfig.from_dict(s) for s in data["servers"]]
-    elif data.get("guild_id") and data.get("notification_channel_id"):
-        servers = [
-            ServerConfig(
-                guild_id=int(data["guild_id"]),
-                notification_channel_id=int(data["notification_channel_id"]),
-                live_role_id=int(data["live_role_id"]) if data.get("live_role_id") else None,
-            )
-        ]
+    servers = [ServerConfig.from_dict(server) for server in data["servers"]]
 
     poll_interval = int(data.get("poll_interval", 60))
     if poll_interval < 10:
@@ -229,21 +248,22 @@ def load_config(
 
     config = Config(
         discord_token=discord_token,
-        youtube_api_key=os.getenv("YOUTUBE_API_KEY") or None,
-        twitch_client_id=os.getenv("TWITCH_CLIENT_ID") or None,
-        twitch_client_secret=os.getenv("TWITCH_CLIENT_SECRET") or None,
-        streamer_name=str(data.get("streamer_name") or "Streamer"),
+        youtube_api_key=secret("YOUTUBE_API_KEY") or None,
+        twitch_client_id=secret("TWITCH_CLIENT_ID") or None,
+        twitch_client_secret=secret("TWITCH_CLIENT_SECRET") or None,
+        streamer_name="Streamer",
+        stream_paused=False,
+        discord_user_id="",
+        message_type="embed",
         poll_interval=poll_interval,
         embed_color=_coerce_color(data.get("embed_color", "0xFF0000")),
         custom_message=str(data.get("custom_message") or "**{name}** is live on {platform}!"),
         presence_idle=str(data.get("presence_idle") or "for live streams..."),
         ping_once_per_stream=bool(data.get("ping_once_per_stream", True)),
         delete_after_offline=bool(data.get("delete_after_offline", False)),
-        webhook_mode=bool(data.get("webhook_mode", False)),
-        webhook_url=os.getenv("DISCORD_WEBHOOK_URL") or (data.get("webhook_url") or None),
         servers=servers,
-        youtube_channel_id=(data.get("youtube_channel_id") or None),
-        twitch_username=(data.get("twitch_username") or None),
+        youtube_channel_id=None,
+        twitch_username=None,
         buttons=buttons,
         themes=themes,
         raw=data,
@@ -255,23 +275,5 @@ def load_config(
 
 def _validate(config: Config) -> None:
     """Validate cross-field invariants, raising :class:`ConfigError`."""
-    if config.webhook_mode and not config.webhook_url:
-        raise ConfigError(
-            "webhook_mode is enabled but no webhook_url / DISCORD_WEBHOOK_URL is set."
-        )
-    if not config.webhook_mode and not config.servers:
-        raise ConfigError(
-            "No target servers configured. Set guild_id and "
-            "notification_channel_id (or a 'servers' list) in config.json."
-        )
-    # At least one platform must be configured to have anything to monitor.
-    if not any([config.youtube_channel_id, config.twitch_username]):
-        raise ConfigError(
-            "No platforms configured. Set at least one of youtube_channel_id "
-            "or twitch_username in config.json."
-        )
-    if config.twitch_username and not (config.twitch_client_id and config.twitch_client_secret):
-        raise ConfigError(
-            "Twitch is configured but TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET "
-            "are missing from the environment."
-        )
+    if any(stream.get("twitch_username") for server in config.servers for stream in server.streams) and not (config.twitch_client_id and config.twitch_client_secret):
+        raise ConfigError("Twitch is configured but TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET are missing from the environment.")

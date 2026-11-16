@@ -1,0 +1,38 @@
+services:
+  admin:
+    image: stream-notify-bot:local
+    build: .
+    command: ["python", "admin_web.py"]
+    env_file: .env
+    environment:
+      APP_DATA_DIR: /app/state
+      WEB_BIND_HOST: 0.0.0.0
+    ports:
+      - "${ADMIN_BIND_ADDRESS:-127.0.0.1}:${ADMIN_PORT:-8765}:8765"
+    volumes:
+      - stream_notify_data:/app/state
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  bot:
+    image: stream-notify-bot:local
+    build: .
+    command: ["python", "main.py"]
+    env_file: .env
+    environment:
+      APP_DATA_DIR: /app/state
+    volumes:
+      - stream_notify_data:/app/state
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  stream_notify_data:

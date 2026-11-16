@@ -42,6 +42,10 @@ class StreamInfo:
         return f"{self.platform}:{self.stream_id}"
 
 
+class PlatformError(Exception):
+    """The platform could not determine whether the stream is live."""
+
+
 class BasePlatform(ABC):
     """Abstract base every platform integration inherits from."""
 
@@ -80,13 +84,10 @@ class BasePlatform(ABC):
     ) -> dict | None:
         """GET ``url`` and decode JSON with automatic retry/backoff.
 
-        Returns ``None`` on persistent failure so the monitor can simply treat
-        the platform as "unknown / offline" for this cycle instead of crashing.
+        Raises PlatformError on persistent failure so the previous state is kept.
         """
         async def _do() -> dict | None:
             async with self.session.get(url, headers=headers, params=params) as resp:
-                if resp.status == 404:
-                    return None
                 resp.raise_for_status()
                 return await resp.json(content_type=None)
 
@@ -103,8 +104,6 @@ class BasePlatform(ABC):
         """GET ``url`` returning the body text, with retry/backoff."""
         async def _do() -> str | None:
             async with self.session.get(url, headers=headers, params=params) as resp:
-                if resp.status == 404:
-                    return None
                 resp.raise_for_status()
                 return await resp.text()
 
@@ -124,11 +123,10 @@ class BasePlatform(ABC):
                 return await func()
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt >= retries:
-                    self.log.error("%s failed after %d attempts: %s", what, retries, exc)
-                    return None
+                    raise PlatformError(f"{what} failed after {retries} attempts ({type(exc).__name__})") from exc
                 self.log.warning(
                     "%s failed (attempt %d/%d): %s - retrying in %.0fs",
-                    what, attempt, retries, exc, delay,
+                    what, attempt, retries, type(exc).__name__, delay,
                 )
                 await asyncio.sleep(delay)
                 delay *= 2

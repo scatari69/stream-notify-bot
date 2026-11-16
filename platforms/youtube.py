@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from platforms.base import BasePlatform, StreamInfo
+from platforms.base import BasePlatform, PlatformError, StreamInfo
 
 _API_BASE = "https://www.googleapis.com/youtube/v3"
 # Matches the JSON blob the watch page embeds so we can pull live status out
@@ -56,7 +56,9 @@ class YouTubePlatform(BasePlatform):
                 "key": self.config.youtube_api_key or "",
             },
         )
-        if not search or not search.get("items"):
+        if not isinstance(search, dict) or not isinstance(search.get("items"), list):
+            raise PlatformError("YouTube returned an invalid search response")
+        if not search["items"]:
             return None
 
         item = search["items"][0]
@@ -66,14 +68,17 @@ class YouTubePlatform(BasePlatform):
         # Fetch live details + statistics for a richer embed.
         viewer_count: int | None = None
         started_at = self._parse_time(snippet.get("publishedAt"))
-        details = await self._request_json(
-            f"{_API_BASE}/videos",
-            params={
-                "part": "liveStreamingDetails,snippet",
-                "id": video_id,
-                "key": self.config.youtube_api_key or "",
-            },
-        )
+        try:
+            details = await self._request_json(
+                f"{_API_BASE}/videos",
+                params={
+                    "part": "liveStreamingDetails,snippet",
+                    "id": video_id,
+                    "key": self.config.youtube_api_key or "",
+                },
+            )
+        except PlatformError:
+            details = None
         if details and details.get("items"):
             live = details["items"][0].get("liveStreamingDetails", {})
             if live.get("concurrentViewers"):
@@ -117,15 +122,17 @@ class YouTubePlatform(BasePlatform):
             },
         )
         if not html:
-            return None
+            raise PlatformError("YouTube returned an empty page")
 
         live_match = _IS_LIVE_RE.search(html)
-        if not live_match or live_match.group(1) != "true":
+        if not live_match:
+            raise PlatformError("YouTube page does not contain live status")
+        if live_match.group(1) != "true":
             return None
 
         video_match = _VIDEO_ID_RE.search(html)
         if not video_match:
-            return None
+            raise PlatformError("YouTube live page does not contain a video ID")
         video_id = video_match.group(1)
 
         title = "Live Stream"

@@ -110,6 +110,7 @@ def build_message_content(info: StreamInfo, config: Config, role_mention: str | 
     """
     message = config.custom_message.format(
         name=info.channel_name,
+        streamer=f"<@{config.discord_user_id}>" if config.discord_user_id else info.channel_name,
         platform=info.platform.capitalize(),
         url=info.url,
     )

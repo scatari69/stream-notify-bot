@@ -2,7 +2,7 @@
 
 Discord-бот отслеживает трансляции на Twitch и YouTube и отправляет уведомления на настроенные серверы. Управление — через веб-панель с авторизацией Discord. Интерфейс доступен на русском и английском; язык переключается в верхней части страницы и сохраняется в браузере.
 
-Проект основан на [stream-notify-bot](https://github.com/Sufiyxn/stream-notify-bot).
+Проект создан на основе [stream-notify-bot](https://github.com/Sufiyxn/stream-notify-bot) от [Sufiyxn](https://github.com/Sufiyxn). Исходный проект распространяется под лицензией MIT.
 
 ## Возможности
 
@@ -112,3 +112,7 @@ node --check static/admin.js
 ```
 
 Основные компоненты: `admin_web.py` — веб-панель и OAuth, `main.py` и `monitor.py` — бот и мониторинг, `platforms/` — интеграции, `delivery_store.py` — состояние уведомлений, `static/` — интерфейс.
+
+## Лицензия
+
+Проект распространяется под лицензией [MIT](LICENSE). Автор исходного проекта — [Sufiyxn](https://github.com/Sufiyxn).
